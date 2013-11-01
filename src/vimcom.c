@@ -46,6 +46,7 @@ static char tmpdir[512];
 static int objbr_auto = 0;
 static int has_new_lib = 0;
 static int has_new_obj = 0;
+static int always_ls_env = 0;
 
 #ifdef WIN32
 static int r_is_busy = 0;
@@ -346,10 +347,10 @@ static void vimcom_list_env()
     const char *varName;
     SEXP envVarsSEXP, varSEXP;
 
-    if(vimcom_count_objects() == 0)
+    if(always_ls_env == 0 && vimcom_count_objects() == 0)
         return;
     if(verbose > 1 && objbr_auto)
-        Rprintf("New number of Objects: %d\n", nobjs);
+        Rprintf("Current number of Objects: %d\n", nobjs);
 
     char fn[512];
 
@@ -814,8 +815,8 @@ static void *vimcom_server_thread(void *arg)
                 REprintf("Warning: Deprecated message to vimcom: Save Tmux pane.\n");
                 break;
             case 2: // Confirm port number
-                sprintf(rep, "0.9-9 %s", getenv("VIMINSTANCEID"));
-                if(strcmp(rep, "(null)") == 0)
+                sprintf(rep, "0.9-91 vimcom %s", getenv("VIMINSTANCEID"));
+                if(getenv("VIMINSTANCEID") == NULL)
                     REprintf("vimcom: the environment variable VIMINSTANCEID is not set.\n");
                 break;
             case 3: // Update Object Browser (.GlobalEnv)
@@ -971,12 +972,13 @@ static void *vimcom_server_thread(void *arg)
 }
 
 
-void vimcom_Start(int *vrb, int *odf, int *ols, int *anm)
+void vimcom_Start(int *vrb, int *odf, int *ols, int *anm, int *alw)
 {
     verbose = *vrb;
     opendf = *odf;
     openls = *ols;
     allnames = *anm;
+    always_ls_env = *alw;
 #ifdef WIN32
     Xdisp = 1;
 #else
@@ -1053,6 +1055,7 @@ void vimcom_Start(int *vrb, int *odf, int *ols, int *anm)
             loadedlibs[i][0] = 0;
         }
 
+
         // Save a file to indicate that vimcom is running
         char fn[512];
         snprintf(fn, 510, "%s/vimcom_running", tmpdir);
@@ -1061,12 +1064,12 @@ void vimcom_Start(int *vrb, int *odf, int *ols, int *anm)
             REprintf("Error: Could not write to '%s'. [vimcom]\n", fn);
             return;
         }
-        fprintf(f, "vimcom is running\n0.9-9\n%s\n", getenv("VIMINSTANCEID"));
+        fprintf(f, "vimcom is running\n0.9-91\n%s\n", getenv("VIMINSTANCEID"));
         fclose(f);
 
         vimcom_initialized = 1;
         if(verbose > 0)
-            REprintf("vimcom 0.9-9 loaded\n");
+            REprintf("vimcom 0.9-91 loaded\n");
         if(verbose > 1)
             REprintf("    VIMTMPDIR = %s\n    VIMINSTANCEID = %s\n",
                     tmpdir, getenv("VIMINSTANCEID"));
