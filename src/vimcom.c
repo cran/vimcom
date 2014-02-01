@@ -41,6 +41,8 @@ static int nlibs = 0;
 static int nobjs = 0;
 static char obsname[128];
 static char edsname[128];
+static char liblist[512];
+static char globenv[512];
 static char strL[16];
 static char strT[16];
 static char tmpdir[512];
@@ -52,6 +54,7 @@ static int always_ls_env = 0;
 #ifdef WIN32
 static int r_is_busy = 0;
 static int tcltkerr = 0;
+static int toggling_list = 0;
 #else
 static int fired = 0;
 static char flag_eval[512];
@@ -85,6 +88,13 @@ static void vimcom_vimclient(const char *expr, const char *svrnm)
     char *result = NULL;
     if(!Xdisp)
         return;
+#ifdef WIN32
+    /* Avoid cross message between Vim and R */
+    if(toggling_list){
+        toggling_list = 0;
+        return;
+    }
+#endif
     if(verbose > 2)
         Rprintf("vimcom_client(%s): '%s'\n", expr, svrnm);
     if(svrnm[0] == 0){
@@ -374,15 +384,12 @@ static void vimcom_list_env()
     if(verbose > 1 && objbr_auto)
         Rprintf("Current number of Objects: %d\n", nobjs);
 
-    char fn[512];
-
     if(tmpdir[0] == 0)
         return;
 
-    snprintf(fn, 510, "%s/globenv_%s", tmpdir, obsname);
-    FILE *f = fopen(fn, "w");
+    FILE *f = fopen(globenv, "w");
     if(f == NULL){
-        REprintf("Error: Could not write to '%s'. [vimcom]\n", fn);
+        REprintf("Error: Could not write to '%s'. [vimcom]\n", globenv);
         return;
     }
 
@@ -486,7 +493,6 @@ static void vimcom_list_libs()
     char prefixT[64];
     char prefixL[64];
     char libasenv[64];
-    char fn[512];
     SEXP x, oblist, obj;
 
     if(tmpdir[0] == 0)
@@ -496,13 +502,12 @@ static void vimcom_list_libs()
 
     if(newnlibs == nlibs)
         return;
-    else
-        nlibs = newnlibs;
 
-    snprintf(fn, 510, "%s/liblist_%s", tmpdir, obsname);
-    FILE *f = fopen(fn, "w");
+    nlibs = newnlibs;
+
+    FILE *f = fopen(liblist, "w");
     if(f == NULL){
-        REprintf("Error: Could not write to '%s'. [vimcom]\n", fn);
+        REprintf("Error: Could not write to '%s'. [vimcom]\n", liblist);
         return;
     }
     fprintf(f, "Libraries | .GlobalEnv\n\n");
@@ -788,7 +793,7 @@ static void *vimcom_server_thread(void *arg)
     hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
     hints.ai_socktype = SOCK_DGRAM; /* Datagram socket */
     hints.ai_flags = AI_PASSIVE;    /* For wildcard IP address */
-    hints.ai_protocol = 0;	    /* Any protocol */
+    hints.ai_protocol = 0;          /* Any protocol */
     hints.ai_canonname = NULL;
     hints.ai_addr = NULL;
     hints.ai_next = NULL;
@@ -809,13 +814,13 @@ static void *vimcom_server_thread(void *arg)
             if (sfd == -1)
                 continue;
             if (bind(sfd, rp->ai_addr, rp->ai_addrlen) == 0)
-                break;		   /* Success */
+                break;       /* Success */
             close(sfd);
         }
-        freeaddrinfo(res);	   /* No longer needed */
+        freeaddrinfo(res);   /* No longer needed */
     }
 
-    if (rp == NULL) {		   /* No address succeeded */
+    if (rp == NULL) {        /* No address succeeded */
         REprintf("Error: Could not bind. [vimcom]\n");
         vimcom_failure = 1;
         return(NULL);
@@ -835,14 +840,17 @@ static void *vimcom_server_thread(void *arg)
         nread = recvfrom(sfd, buf, bsize, 0,
                 (SOCKADDR *) &peer_addr, &peer_addr_len);
         if (nread == SOCKET_ERROR) {
-            REprintf("recvfrom failed with error %d\n", WSAGetLastError());
+            REprintf("vimcom: recvfrom failed with error %d\n", WSAGetLastError());
             return;
         }
 #else
         nread = recvfrom(sfd, buf, bsize, 0,
                 (struct sockaddr *) &peer_addr, &peer_addr_len);
-        if (nread == -1)
-            continue;		   /* Ignore failed request */
+        if (nread == -1){
+            if(verbose > 1)
+                REprintf("vimcom: recvfrom failed\n");
+            continue;     /* Ignore failed request */
+        }
 #endif
 
         int status;
@@ -860,7 +868,7 @@ static void *vimcom_server_thread(void *arg)
                 REprintf("Warning: Deprecated message to vimcom: Save Tmux pane.\n");
                 break;
             case 2: // Confirm port number
-                sprintf(rep, "0.9-92 vimcom %s", getenv("VIMINSTANCEID"));
+                sprintf(rep, "0.9-93 vimcom %s", getenv("VIMINSTANCEID"));
                 if(getenv("VIMINSTANCEID") == NULL)
                     REprintf("vimcom: the environment variable VIMINSTANCEID is not set.\n");
                 break;
@@ -899,6 +907,7 @@ static void *vimcom_server_thread(void *arg)
                 if(strstr(bbuf, "package:") == bbuf){
                     nlibs = 0;
 #ifdef WIN32
+                    toggling_list = 1;
                     vimcom_list_libs();
 #else
                     flag_lslibs = 1;
@@ -922,6 +931,7 @@ static void *vimcom_server_thread(void *arg)
                     strcpy(rep, "R is busy.");
                     break;
                 }
+                toggling_list = 1;
 #endif
                 bbuf = buf;
                 bbuf++;
@@ -1055,6 +1065,9 @@ void vimcom_Start(int *vrb, int *odf, int *ols, int *anm, int *alw)
             REprintf("vimcom: vimremote_init() failed.\n");
     }
 
+    snprintf(liblist, 510, "%s/liblist_%s", tmpdir, getenv("VIMINSTANCEID"));
+    snprintf(globenv, 510, "%s/globenv_%s", tmpdir, getenv("VIMINSTANCEID"));
+
     char envstr[1024];
     envstr[0] = 0;
     if(getenv("LC_MESSAGES"))
@@ -1119,12 +1132,12 @@ void vimcom_Start(int *vrb, int *odf, int *ols, int *anm, int *alw)
             REprintf("Error: Could not write to '%s'. [vimcom]\n", fn);
             return;
         }
-        fprintf(f, "vimcom is running\n0.9-92\n%s\n", getenv("VIMINSTANCEID"));
+        fprintf(f, "vimcom is running\n0.9-93\n%s\n", getenv("VIMINSTANCEID"));
         fclose(f);
 
         vimcom_initialized = 1;
         if(verbose > 0)
-            REprintf("vimcom 0.9-92 loaded\n");
+            REprintf("vimcom 0.9-93 loaded\n");
         if(verbose > 1)
             REprintf("    VIMTMPDIR = %s\n    VIMINSTANCEID = %s\n",
                     tmpdir, getenv("VIMINSTANCEID"));
